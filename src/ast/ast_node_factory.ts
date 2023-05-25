@@ -24,6 +24,7 @@ import { Literal } from "./implementation/expression/literal";
 import { MemberAccess } from "./implementation/expression/member_access";
 import { NewExpression } from "./implementation/expression/new_expression";
 import { PrimaryExpression } from "./implementation/expression/primary_expression";
+import { PhantomExpression } from "./implementation/expression/phantom_expression";
 import { TupleExpression } from "./implementation/expression/tuple_expression";
 import { UnaryOperation } from "./implementation/expression/unary_operation";
 import { IdentifierPath } from "./implementation/meta/identifier_path";
@@ -340,6 +341,14 @@ const argExtractionMapping = new Map<ASTNodeConstructor<ASTNode>, (node: any) =>
             node.typeString,
             node.vTypeName,
             node.raw
+        ]
+    ],
+    [
+        PhantomExpression,
+        (node: PhantomExpression): Specific<ConstructorParameters<typeof PhantomExpression>> => [
+	  node.typeString,
+	  node.content,
+	  node.raw
         ]
     ],
     [
@@ -795,6 +804,12 @@ export class ASTNodeFactory {
         ...args: Specific<ConstructorParameters<typeof PrimaryExpression>>
     ): PrimaryExpression {
         return this.make(PrimaryExpression, ...args);
+    }
+
+    makePhantomExpression(
+      ...args: Specific<ConstructorParameters<typeof PhantomExpression>>
+    ): PhantomExpression {
+        return this.make(PhantomExpression, ...args);
     }
 
     makeTupleExpression(

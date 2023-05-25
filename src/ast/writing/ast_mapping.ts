@@ -33,6 +33,7 @@ import {
     Literal,
     MemberAccess,
     NewExpression,
+    PhantomExpression,
     TupleExpression,
     UnaryOperation
 } from "../implementation/expression";
@@ -509,6 +510,12 @@ class ElementaryTypeNameExpressionWriter extends ASTNodeWriter {
 class NewExpressionWriter extends ASTNodeWriter {
     writeInner(node: NewExpression, writer: ASTWriter): SrcDesc {
         return writer.desc("new ", node.vTypeName);
+    }
+}
+
+class PhantomExpressionWriter extends ASTNodeWriter {
+    writeInner(node: PhantomExpression, writer: ASTWriter): SrcDesc {
+        return writer.desc(node.content);
     }
 }
 
@@ -1435,6 +1442,7 @@ export const DefaultASTWriterMapping = new Map<ASTNodeConstructor<ASTNode>, ASTN
     [Conditional, new ConditionalWriter()],
     [ElementaryTypeNameExpression, new ElementaryTypeNameExpressionWriter()],
     [NewExpression, new NewExpressionWriter()],
+    [PhantomExpression, new PhantomExpressionWriter()],
     [TupleExpression, new TupleExpressionWriter()],
     [ExpressionStatement, new ExpressionStatementWriter()],
     [Assignment, new AssignmentWriter()],

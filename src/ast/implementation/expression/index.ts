@@ -12,5 +12,6 @@ export * from "./literal";
 export * from "./member_access";
 export * from "./new_expression";
 export * from "./primary_expression";
+export * from "./phantom_expression";
 export * from "./tuple_expression";
 export * from "./unary_operation";
