@@ -1,6 +1,6 @@
 import { ASTNodeFormatter } from "./ast_node_formatter";
 import { ASTContext } from "./ast_reader";
-import { parseSourceLocation, SourceLocation } from "./utils";
+import { SourceLocation, parseSourceLocation } from "./utils";
 
 export type ASTNodeCallback = (node: ASTNode) => void;
 export type ASTNodeSelector = (node: ASTNode) => boolean;
@@ -328,10 +328,10 @@ export class ASTNode {
      *
      * In other words, returns corresponding code fragment substring.
      */
-    extractSourceFragment(source: string): string {
+    extractSourceFragment(source: Uint8Array): Uint8Array {
         const { offset, length } = this.sourceInfo;
 
-        return source.substr(offset, length);
+        return source.slice(offset, offset + length);
     }
 
     private createWalker(callback: ASTNodeCallback): ASTNodeCallback {
@@ -348,9 +348,9 @@ export class ASTNode {
 }
 
 export class ASTNodeWithChildren<T extends ASTNode> extends ASTNode {
-    protected ownChildren: ASTNode[] = [];
+    protected ownChildren: T[] = [];
 
-    get children(): readonly ASTNode[] {
+    get children(): readonly T[] {
         return this.ownChildren;
     }
 
@@ -376,7 +376,7 @@ export class ASTNodeWithChildren<T extends ASTNode> extends ASTNode {
         return node;
     }
 
-    insertBefore(node: T, referenceNode: ASTNode): T {
+    insertBefore(node: T, referenceNode: T): T {
         const index = this.ownChildren.indexOf(referenceNode);
 
         if (index === -1) {
@@ -390,23 +390,23 @@ export class ASTNodeWithChildren<T extends ASTNode> extends ASTNode {
         return node;
     }
 
-    insertAfter(node: T, referenceNode: ASTNode): T {
+    insertAfter(node: T, referenceNode: T): T {
         if (this.ownChildren.indexOf(referenceNode) === -1) {
             throw new Error("Reference node is not a child of current node");
         }
 
-        const sibling = referenceNode.nextSibling;
+        const sibling = referenceNode.nextSibling as T | undefined;
 
         return sibling ? this.insertBefore(node, sibling) : this.appendChild(node);
     }
 
     insertAtBeginning(node: T): T {
-        const firstChild = this.firstChild;
+        const firstChild = this.firstChild as T | undefined;
 
         return firstChild ? this.insertBefore(node, firstChild) : this.appendChild(node);
     }
 
-    replaceChild<N extends T, O extends T>(newNode: N, oldNode: O): O {
+    replaceChild(newNode: T, oldNode: T): T {
         const index = this.ownChildren.indexOf(oldNode);
 
         if (index === -1) {

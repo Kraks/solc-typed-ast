@@ -1,18 +1,16 @@
 import { Decimal } from "decimal.js";
 import { gte, lt } from "semver";
 import {
+    ASTNode,
     AnyResolvable,
     ArrayTypeName,
     Assignment,
-    ASTNode,
     BinaryOperation,
     Conditional,
     ContractDefinition,
     ContractKind,
     ElementaryTypeName,
     ElementaryTypeNameExpression,
-    encodeEventSignature,
-    encodeFuncSignature,
     EnumDefinition,
     ErrorDefinition,
     EventDefinition,
@@ -37,7 +35,6 @@ import {
     ModifierDefinition,
     NewExpression,
     ParameterList,
-    resolveAny,
     SourceUnit,
     StateVariableVisibility,
     StructDefinition,
@@ -48,9 +45,12 @@ import {
     UserDefinedTypeName,
     UserDefinedValueTypeDefinition,
     VariableDeclaration,
-    VariableDeclarationStatement
+    VariableDeclarationStatement,
+    encodeEventSignature,
+    encodeFuncSignature,
+    resolveAny
 } from "../ast";
-import { DataLocation } from "../ast/constants";
+import { DataLocation, ExternalReferenceType } from "../ast/constants";
 import { assert, eq, forAll, forAny, pp } from "../misc";
 import { ABIEncoderVersion, abiTypeToCanonicalName, abiTypeToLibraryCanonicalName } from "./abi";
 import {
@@ -94,25 +94,26 @@ import {
 } from "./builtins";
 import { evalConstantExpr } from "./eval_const";
 import { SolTypeError } from "./misc";
-import { applySubstitution, buildSubstitutions, TypeSubstituion } from "./polymorphic";
+import { TypeSubstituion, applySubstitution, buildSubstitutions } from "./polymorphic";
 import { types } from "./reserved";
 import {
     BINARY_OPERATOR_GROUPS,
+    CALL_BUILTINS,
+    SUBDENOMINATION_MULTIPLIERS,
     castable,
     decimalToRational,
     enumToIntType,
     generalizeType,
     getABIEncoderVersion,
-    getFallbackRecvFuns,
     getFQDefName,
+    getFallbackRecvFuns,
     inferCommonVisiblity,
     isReferenceType,
     isVisiblityExternallyCallable,
     mergeFunTypes,
     smallestFittingType,
     specializeType,
-    stripSingletonParens,
-    SUBDENOMINATION_MULTIPLIERS
+    stripSingletonParens
 } from "./utils";
 
 const unaryImpureOperators = ["++", "--"];
@@ -201,7 +202,7 @@ function isSupportedByEncoderV1(type: TypeNode): boolean {
         const [baseT] = generalizeType(type.elementT);
 
         return (
-            isSupportedByEncoderV1(baseT) ||
+            isSupportedByEncoderV1(baseT) &&
             !(baseT instanceof ArrayType && baseT.size === undefined)
         );
     }
@@ -1039,6 +1040,10 @@ export class InferType {
 
                     if (originalSym instanceof FunctionDefinition) {
                         return this.funDefToType(originalSym);
+                    }
+
+                    if (originalSym instanceof EventDefinition) {
+                        return this.eventDefToType(originalSym);
                     }
 
                     return this.variableDeclarationToTypeNode(originalSym);
@@ -2341,6 +2346,54 @@ export class InferType {
         return false;
     }
 
+    isABIEncodable(type: TypeNode, encoderVersion: ABIEncoderVersion): boolean {
+        if (
+            type instanceof AddressType ||
+            type instanceof BoolType ||
+            type instanceof BytesType ||
+            type instanceof FixedBytesType ||
+            (type instanceof FunctionType &&
+                (type.visibility === FunctionVisibility.External ||
+                    type.visibility === FunctionVisibility.Public)) ||
+            type instanceof IntType ||
+            type instanceof IntLiteralType ||
+            type instanceof StringLiteralType ||
+            type instanceof StringType
+        ) {
+            return true;
+        }
+
+        if (type instanceof PointerType) {
+            return this.isABIEncodable(type.to, encoderVersion);
+        }
+
+        if (encoderVersion === ABIEncoderVersion.V1 && !isSupportedByEncoderV1(type)) {
+            return false;
+        }
+
+        if (type instanceof ArrayType) {
+            return this.isABIEncodable(type.elementT, encoderVersion);
+        }
+
+        if (type instanceof UserDefinedType) {
+            if (
+                type.definition instanceof ContractDefinition ||
+                type.definition instanceof EnumDefinition ||
+                type.definition instanceof UserDefinedValueTypeDefinition
+            ) {
+                return true;
+            }
+
+            if (type.definition instanceof StructDefinition) {
+                return type.definition.vMembers.every((field) =>
+                    this.isABIEncodable(this.variableDeclarationToTypeNode(field), encoderVersion)
+                );
+            }
+        }
+
+        return false;
+    }
+
     /**
      * Convert an internal TypeNode to the external TypeNode that would correspond to it
      * after ABI-encoding with encoder version `encoderVersion`. Follows the following rules:
@@ -2359,22 +2412,15 @@ export class InferType {
         encoderVersion: ABIEncoderVersion,
         normalizePointers = false
     ): TypeNode {
-        if (type instanceof MappingType) {
-            throw new Error("Cannot abi-encode mapping types");
-        }
+        assert(
+            this.isABIEncodable(type, encoderVersion),
+            'Can not ABI-encode type "{0}" with encoder "{1}"',
+            type,
+            encoderVersion
+        );
 
         if (type instanceof ArrayType) {
             const elT = this.toABIEncodedType(type.elementT, encoderVersion);
-
-            if (type.size !== undefined) {
-                const elements = [];
-
-                for (let i = 0; i < type.size; i++) {
-                    elements.push(elT);
-                }
-
-                return new TupleType(elements);
-            }
 
             return new ArrayType(elT, type.size);
         }
@@ -2401,13 +2447,6 @@ export class InferType {
             }
 
             if (type.definition instanceof StructDefinition) {
-                assert(
-                    encoderVersion !== ABIEncoderVersion.V1 || isSupportedByEncoderV1(type),
-                    "Type {0} is not supported by encoder {1}",
-                    type,
-                    encoderVersion
-                );
-
                 const fieldTs = type.definition.vMembers.map((fieldT) =>
                     this.variableDeclarationToTypeNode(fieldT)
                 );
@@ -2617,5 +2656,96 @@ export class InferType {
         const resolvedCalleeT = this.matchArguments(calleeT.defs, callsite);
 
         return resolvedCalleeT;
+    }
+
+    private isExternalCallContext(expr: Expression): boolean {
+        if (
+            expr instanceof Identifier ||
+            expr instanceof MemberAccess ||
+            expr instanceof FunctionCallOptions ||
+            expr instanceof FunctionCall
+        ) {
+            const exprT = this.typeOf(expr);
+
+            if (exprT instanceof UserDefinedType) {
+                if (exprT.definition instanceof ContractDefinition) {
+                    return true;
+                }
+            }
+
+            if (exprT instanceof TypeNameType) {
+                return (
+                    exprT.type instanceof UserDefinedType &&
+                    exprT.type.definition instanceof ContractDefinition &&
+                    exprT.type.definition.kind === ContractKind.Library
+                );
+            }
+        }
+
+        if (
+            expr instanceof MemberAccess ||
+            expr instanceof FunctionCallOptions ||
+            expr instanceof FunctionCall
+        ) {
+            return this.isExternalCallContext(expr.vExpression);
+        }
+
+        if (expr instanceof Conditional) {
+            return (
+                this.isExternalCallContext(expr.vTrueExpression) ||
+                this.isExternalCallContext(expr.vFalseExpression)
+            );
+        }
+
+        if (expr instanceof TupleExpression && expr.vComponents.length === 1) {
+            return this.isExternalCallContext(expr.vComponents[0]);
+        }
+
+        return false;
+    }
+
+    isFunctionCallExternal(call: FunctionCall): boolean {
+        if (call.kind !== FunctionCallKind.FunctionCall) {
+            return false;
+        }
+
+        if (
+            call.vFunctionCallType === ExternalReferenceType.Builtin &&
+            CALL_BUILTINS.includes(call.vFunctionName)
+        ) {
+            return true;
+        }
+
+        let exprT = this.typeOf(call.vExpression);
+
+        if (exprT instanceof FunctionLikeSetType) {
+            const calleeT = this.typeOfCallee(call);
+
+            if (!(calleeT instanceof FunctionType)) {
+                return false;
+            }
+
+            exprT = calleeT;
+        }
+
+        if (exprT instanceof FunctionType) {
+            if (exprT.implicitFirstArg) {
+                /**
+                 * Calls via using-for are not considered as external.
+                 * Currently "implicitFirstArg" is used only for using-for.
+                 */
+                return false;
+            }
+
+            if (exprT.visibility === FunctionVisibility.External) {
+                return true;
+            }
+
+            if (exprT.visibility === FunctionVisibility.Public) {
+                return this.isExternalCallContext(call.vExpression);
+            }
+        }
+
+        return false;
     }
 }

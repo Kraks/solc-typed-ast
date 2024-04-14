@@ -76,8 +76,8 @@ import { UserDefinedTypeName } from "./implementation/type/user_defined_type_nam
 type Specific<Args extends any[]> = Args["length"] extends 0
     ? undefined
     : ((...args: Args) => void) extends (id: number, src: string, ...rest: infer Rest) => void
-    ? Rest
-    : [];
+      ? Rest
+      : [];
 
 type IDMap = Map<number, number>;
 
@@ -93,6 +93,7 @@ const argExtractionMapping = new Map<ASTNodeConstructor<ASTNode>, (node: any) =>
             node.fullyImplemented,
             node.linearizedBaseContracts,
             node.usedErrors,
+            node.usedEvents,
             node.documentation,
             node.children,
             node.nameLocation,
@@ -104,6 +105,7 @@ const argExtractionMapping = new Map<ASTNodeConstructor<ASTNode>, (node: any) =>
         (node: EnumDefinition): Specific<ConstructorParameters<typeof EnumDefinition>> => [
             node.name,
             node.vMembers,
+            node.documentation,
             node.nameLocation,
             node.raw
         ]
@@ -178,6 +180,7 @@ const argExtractionMapping = new Map<ASTNodeConstructor<ASTNode>, (node: any) =>
             node.scope,
             node.visibility,
             node.vMembers,
+            node.documentation,
             node.nameLocation,
             node.raw
         ]
@@ -431,6 +434,7 @@ const argExtractionMapping = new Map<ASTNodeConstructor<ASTNode>, (node: any) =>
             node.absolutePath,
             node.exportedSymbols,
             node.children,
+            node.license,
             node.raw
         ]
     ],

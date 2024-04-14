@@ -1,11 +1,16 @@
+import { bytesToString, strUTF8Len } from "../../misc";
 import { ASTNode } from "../ast_node";
-import { ASTContext, ASTNodePostprocessor } from "../ast_reader";
+import { ASTContext, ASTNodePostprocessor, FileMap } from "../ast_reader";
+import { RawComment, parseComments } from "../comments";
+import { RawCommentKind } from "../constants";
 import {
     ContractDefinition,
+    EnumDefinition,
     ErrorDefinition,
     EventDefinition,
     FunctionDefinition,
     ModifierDefinition,
+    StructDefinition,
     VariableDeclaration
 } from "../implementation/declaration";
 import { SourceUnit } from "../implementation/meta/source_unit";
@@ -23,23 +28,50 @@ export class StructuredDocumentationReconstructor {
      */
     fragmentCoordsToStructDoc(
         coords: FragmentCoordinates,
-        source: string
+        source: Uint8Array
     ): StructuredDocumentation | undefined {
         const [from, to, sourceIndex] = coords;
-        const fragment = source.slice(from, to);
-        const comments = this.extractComments(fragment);
-        const docBlock = comments.length > 0 ? this.detectDocumentationBlock(comments) : undefined;
+        const fragment = bytesToString(source.slice(from, to));
 
-        if (docBlock === undefined) {
+        const parsedCommentsSoup = parseComments(fragment);
+
+        // The parser gives us a soup of "strings" (corresponding to non-comment
+        // tokens) and comments.
+        // Find the suffix of the parse output that contains only comments
+        let commentsStartIdx = parsedCommentsSoup.length - 1;
+        for (; commentsStartIdx >= 0; commentsStartIdx--) {
+            if (!(parsedCommentsSoup[commentsStartIdx] instanceof RawComment)) {
+                commentsStartIdx++;
+                break;
+            }
+        }
+
+        const parsedComments = parsedCommentsSoup.slice(
+            commentsStartIdx,
+            parsedCommentsSoup.length
+        ) as RawComment[];
+
+        // No comments found in the game
+        if (parsedComments.length === 0) {
             return undefined;
         }
 
-        const offset = from + fragment.indexOf(docBlock);
-        const length = docBlock.length;
-        const src = `${offset}:${length}:${sourceIndex}`;
-        const text = this.extractText(docBlock);
+        const lastComment = parsedComments[parsedComments.length - 1];
 
-        return new StructuredDocumentation(0, src, text);
+        // The last comment in the gap is not a docstring
+        if (
+            lastComment.kind !== RawCommentKind.BlockNatSpec &&
+            lastComment.kind !== RawCommentKind.LineGroupNatSpec
+        ) {
+            return undefined;
+        }
+
+        const byteOffsetFromFragment = strUTF8Len(fragment.slice(0, lastComment.loc.start));
+        const offset = from + byteOffsetFromFragment;
+        const length = strUTF8Len(lastComment.text);
+        const src = `${offset}:${length}:${sourceIndex}`;
+
+        return new StructuredDocumentation(0, src, lastComment.internalText.trim());
     }
 
     getPrecedingGapCoordinates(node: ASTNode): FragmentCoordinates {
@@ -74,7 +106,8 @@ export class StructuredDocumentationReconstructor {
     getDanglingGapCoordinates(node: ASTNode): FragmentCoordinates {
         const curInfo = node.sourceInfo;
 
-        const to = curInfo.offset + curInfo.length;
+        // Skip final }
+        const to = curInfo.offset + curInfo.length - 1;
         const sourceIndex = curInfo.sourceIndex;
 
         const lastChild = node.lastChild;
@@ -91,116 +124,6 @@ export class StructuredDocumentationReconstructor {
 
         return [from, to, sourceIndex];
     }
-
-    private extractComments(fragment: string): string[] {
-        const rx = /(\/\*([^*]|[\r\n]|(\*+([^*/]|[\r\n])))*\*+\/)|([^\n\r]*\/\/.*[\n\r]+)|[\n\r]/g;
-        const result: string[] = [];
-
-        let match = rx.exec(fragment);
-
-        while (match !== null) {
-            result.push(match[0]);
-
-            match = rx.exec(fragment);
-        }
-
-        return result;
-    }
-
-    private detectDocumentationBlock(comments: string[]): string | undefined {
-        const buffer: string[] = [];
-
-        comments.reverse();
-
-        let stopOnNextGap = false;
-
-        const rxCleanBeforeSlash = /^[^/]+/;
-
-        for (const comment of comments) {
-            /**
-             * Remove ANY leading characters before first `/` character.
-             *
-             * This is mostly actual for dangling documentation candidates,
-             * as their source range starts from very beginnig of parent node.
-             * This leads to an effect that part of parent source symbols are
-             * preceding the `///` or `/**`. Skip them for detection reasons.
-             *
-             * Consider following example:
-             * ```
-             * unchecked {
-             *     /// dangling
-             * }
-             * ```
-             * Source range would include the `unchecked {` part,
-             * however interesting part for us starts only since `///`.
-             */
-            const cleanComment = comment.replace(rxCleanBeforeSlash, "");
-
-            /**
-             * Consider if comment is valid single-line or multi-line DocBlock
-             */
-            if (cleanComment.startsWith("/**")) {
-                buffer.push(comment);
-
-                break;
-            } else if (cleanComment.startsWith("///")) {
-                buffer.push(comment);
-
-                stopOnNextGap = true;
-            } else if (stopOnNextGap) {
-                break;
-            }
-        }
-
-        if (buffer.length === 0) {
-            return undefined;
-        }
-
-        if (buffer.length > 1) {
-            buffer.reverse();
-        }
-
-        /**
-         * When joining back DocBlock, remove leading garbage characters again,
-         * but only before first `/` (not in each line, like before).
-         *
-         * Need to preserve whitespace charactes in multiline comments like
-         * ```
-         * {
-         *      /// A
-         *          /// B
-         *              /// C
-         * }
-         * ```
-         * to have following result
-         * ```
-         * /// A
-         *          /// B
-         *              /// C
-         * ```
-         * NOTE that this is affecting documentation node source range.
-         */
-        return buffer.join("").trim().replace(rxCleanBeforeSlash, "");
-    }
-
-    private extractText(docBlock: string): string {
-        const result: string[] = [];
-
-        const replacers = docBlock.startsWith("///") ? ["/// ", "///"] : ["/**", "*/", "* ", "*"];
-        const lines = docBlock.split("\n");
-
-        for (let line of lines) {
-            line = line.trimStart();
-
-            for (const replacer of replacers) {
-                line = line.replace(replacer, "");
-            }
-
-            result.push(line);
-        }
-
-        return result.join("\n").trim();
-    }
 }
 
 type SupportedNode =
@@ -209,16 +132,18 @@ type SupportedNode =
     | VariableDeclaration
     | ErrorDefinition
     | EventDefinition
+    | EnumDefinition
+    | StructDefinition
     | ModifierDefinition
     | Statement
-    | StatementWithChildren<any>;
+    | StatementWithChildren<ASTNode>;
 
 export class StructuredDocumentationReconstructingPostprocessor
     implements ASTNodePostprocessor<SupportedNode>
 {
     private reconstructor = new StructuredDocumentationReconstructor();
 
-    process(node: SupportedNode, context: ASTContext, sources?: Map<string, string>): void {
+    process(node: SupportedNode, context: ASTContext, sources?: FileMap): void {
         if (sources === undefined) {
             return;
         }
@@ -250,10 +175,16 @@ export class StructuredDocumentationReconstructingPostprocessor
         }
 
         /**
-         * Dangling structured documentation can only be located in statements,
-         * that may have nested children (`StatementWithChildren` or `ContractDefinition`).
+         * Dangling structured documentation can currently be added to
+         * Statements, ContractDefinitions, EnumDefinitions and
+         * StructDefinitions
          */
-        if (node instanceof StatementWithChildren || node instanceof ContractDefinition) {
+        if (
+            node instanceof StatementWithChildren ||
+            node instanceof ContractDefinition ||
+            node instanceof EnumDefinition ||
+            node instanceof StructDefinition
+        ) {
             const danglingGap = this.reconstructor.getDanglingGapCoordinates(node);
             const dangling = this.reconstructor.fragmentCoordsToStructDoc(danglingGap, source);
 
@@ -273,11 +204,15 @@ export class StructuredDocumentationReconstructingPostprocessor
         return (
             node instanceof FunctionDefinition ||
             node instanceof ContractDefinition ||
+            node instanceof EnumDefinition ||
+            node instanceof StructDefinition ||
             node instanceof ErrorDefinition ||
             node instanceof EventDefinition ||
             node instanceof ModifierDefinition ||
             (node instanceof VariableDeclaration &&
-                (node.parent instanceof ContractDefinition || node.parent instanceof SourceUnit)) ||
+                (node.parent instanceof ContractDefinition ||
+                    node.parent instanceof SourceUnit ||
+                    node.parent instanceof StructDefinition)) ||
             node instanceof Statement ||
             node instanceof StatementWithChildren
         );

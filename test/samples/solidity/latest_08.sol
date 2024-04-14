@@ -3,8 +3,32 @@ pragma abicoder v2;
 
 import "./latest_imports_08.sol" as LI;
 
+/**
+ * Struct
+ * Doc
+ */
+struct Some {
+    uint x;
+
+    /**
+     * Struct
+     *  Dangling
+     *   Doc
+     */
+}
+
+/**
+ * Enum
+ * Doc
+ */
 enum EnumABC {
     A, B, C
+
+    /**
+     * Enum
+     *  Dangling
+     *   Doc
+     */
 }
 
 contract UncheckedMathExample {
@@ -359,5 +383,33 @@ contract Features_0819 {
         -a;
 
         return a + b;
+    }
+}
+
+interface IntEvents {
+    event X(uint a);
+}
+
+library LibEvents {
+    event X(uint a);
+}
+
+event X(uint a);
+event Y(uint a) anonymous;
+
+contract Features_0822 {
+    event X(uint a);
+
+    function main() public {
+        emit IntEvents.X(1);
+        emit LibEvents.X(2);
+        /**
+         * Both following emits are referring to an event
+         * that is defined by contract (due to shadowing).
+         */
+        emit X(3);
+        emit Features_0822.X(4);
+
+        emit Y(5);
     }
 }

@@ -6,14 +6,15 @@ import {
     CompilerVersions04,
     compileSol,
     detectCompileErrors,
+    FileMap,
     PossibleCompilerKinds,
     SourceUnit
 } from "../../../src";
 import { createImprint } from "./common";
 
 const sample = "./test/samples/solidity/compile_04.sol";
-const content = fse.readFileSync(sample).toString();
-const expectedFiles = new Map<string, string>([[sample, content]]);
+const content = fse.readFileSync(sample);
+const expectedFiles: FileMap = new Map([[sample, content]]);
 
 const encounters = new Map<string, number>([
     ["SourceUnit", 1],
@@ -57,7 +58,7 @@ describe(`Compile ${sample} with any available 0.4.x compiler`, () => {
                 let data: any = {};
                 let sourceUnits: SourceUnit[];
 
-                before("Compile", async () => {
+                beforeAll(async () => {
                     const result = await compileSol(
                         sample,
                         version,

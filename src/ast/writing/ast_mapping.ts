@@ -103,6 +103,16 @@ function descTrimRight(desc: SrcDesc): void {
     }
 }
 
+function hasSpdxLicence(desc: SrcDesc): boolean {
+    const first = desc[0];
+
+    if (typeof first === "string") {
+        return first.includes("SPDX-License-Identifier");
+    }
+
+    return hasSpdxLicence(first[1]);
+}
+
 /**
  * A small hack to handle semicolons in the last statement of compound statements like if and while. Given:
  *
@@ -622,7 +632,7 @@ class VariableDeclarationStatementWriter extends SimpleStatementWriter<VariableD
 
 /**
  * Compound statemetns don't have their own semicolons. However if a
- * child has a semi-colon, we must make sure to exclude it from our soruce map.
+ * child has a semi-colon, we must make sure to exclude it from our source map.
  */
 abstract class CompoundStatementWriter<
     T extends CompoundStatement
@@ -1018,32 +1028,46 @@ class StructDefinitionWriter extends ASTNodeWriter {
         return ["struct ", node.name, " ", ...this.getBody(node, writer)];
     }
 
+    writeWhole(node: StructDefinition, writer: ASTWriter): SrcDesc {
+        return [
+            ...writePrecedingDocs(node.documentation, writer),
+            [node, this.writeInner(node, writer)]
+        ];
+    }
+
     private getBody(node: StructDefinition, writer: ASTWriter): SrcDesc {
-        if (node.vMembers.length === 0) {
+        if (node.children.length === 0) {
             return ["{}"];
         }
 
         const formatter = writer.formatter;
         const wrap = formatter.renderWrap();
-        const currentIndent = formatter.renderIndent();
 
         formatter.increaseNesting();
 
-        const nestedIndent = formatter.renderIndent();
-
-        formatter.decreaseNesting();
-
-        return [
+        const result: SrcDesc = [
             "{",
             wrap,
             ...flatJoin(
-                node.vMembers.map((vDecl) => [nestedIndent, ...writer.desc(vDecl), ";"]),
+                node.vMembers.map((vDecl) => [
+                    formatter.renderIndent(),
+                    ...writer.desc(vDecl),
+                    ";"
+                ]),
                 wrap
             ),
-            wrap,
-            currentIndent,
-            "}"
+            wrap
         ];
+
+        if (node.danglingDocumentation) {
+            result.push(formatter.renderIndent(), ...writer.desc(node.danglingDocumentation), wrap);
+        }
+
+        formatter.decreaseNesting();
+
+        result.push(formatter.renderIndent(), "}");
+
+        return result;
     }
 }
 
@@ -1208,7 +1232,45 @@ class EnumValueWriter extends ASTNodeWriter {
 
 class EnumDefinitionWriter extends ASTNodeWriter {
     writeInner(node: EnumDefinition, writer: ASTWriter): SrcDesc {
-        return writer.desc("enum ", node.name, " ", "{ ", ...join(node.vMembers, ", "), " }");
+        return ["enum ", node.name, " ", ...this.getBody(node, writer)];
+    }
+
+    writeWhole(node: EnumDefinition, writer: ASTWriter): SrcDesc {
+        return [
+            ...writePrecedingDocs(node.documentation, writer),
+            [node, this.writeInner(node, writer)]
+        ];
+    }
+
+    private getBody(node: EnumDefinition, writer: ASTWriter): SrcDesc {
+        if (node.children.length === 0) {
+            return ["{}"];
+        }
+
+        const formatter = writer.formatter;
+        const wrap = formatter.renderWrap();
+
+        formatter.increaseNesting();
+
+        const result: SrcDesc = [
+            "{",
+            wrap,
+            ...flatJoin(
+                node.vMembers.map((vDecl) => [formatter.renderIndent(), ...writer.desc(vDecl)]),
+                "," + wrap
+            ),
+            wrap
+        ];
+
+        if (node.danglingDocumentation) {
+            result.push(formatter.renderIndent(), ...writer.desc(node.danglingDocumentation), wrap);
+        }
+
+        formatter.decreaseNesting();
+
+        result.push(formatter.renderIndent(), "}");
+
+        return result;
     }
 }
 
@@ -1411,13 +1473,28 @@ class SourceUnitWriter extends ASTNodeWriter {
             result.push(...flatten(node.vVariables.map((n) => [...writeFn(n), ";", wrap])), wrap);
         }
 
-        const otherDefs = [...node.vErrors, ...node.vFunctions, ...node.vContracts];
+        const otherDefs = [
+            ...node.vErrors,
+            ...node.vEvents,
+            ...node.vFunctions,
+            ...node.vContracts
+        ];
 
         if (otherDefs.length > 0) {
             result.push(...flatJoin(otherDefs.map(writeLineFn), wrap));
         }
 
         descTrimRight(result);
+
+        if (node.license && !hasSpdxLicence(result)) {
+            result.unshift(
+                StructuredDocumentationWriter.render(
+                    "SPDX-License-Identifier: " + node.license,
+                    writer.formatter
+                ),
+                wrap
+            );
+        }
 
         return result;
     }

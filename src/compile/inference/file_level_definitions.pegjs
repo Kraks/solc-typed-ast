@@ -16,6 +16,7 @@ FileLevelDefinition =
     / FreeFunction
     / ContractDefinition
     / EnumDef
+    / EventDef
     / ErrorDef
     / StructDef
     / UserValueTypeDef
@@ -67,9 +68,10 @@ ImportDirective =
 
 // ==== Global Constants
 
-// global constants don't support reference types I think?
+// Global constants don't support reference types.
+// Only other multi-word case is "address payable".
 ConstantType =
-    Identifier (__ LBRACKET Number? RBRACKET)*  { return text(); }
+    (ADDRESS (__ PAYABLE)?) / (Identifier (__ LBRACKET Number? RBRACKET)*) { return text(); }
 
 Constant = ConstantType __ CONSTANT  __ name: Identifier __ EQUAL __ value: NonSemicolonSoup __  SEMICOLON {
     return { kind: FileLevelNodeKind.Constant, location: location(), name, value } as FLConstant;
@@ -143,6 +145,19 @@ EnumDef = ENUM __ name: Identifier __ body: EnumDefBody {
     } as FLEnumDefinition;
 }
 
+// ==== Event
+
+EventArgs = LPAREN __ ParenSoup __ RPAREN { return text(); }
+EventDef = EVENT __ name: Identifier __ args: EventArgs __ isAnonymous: (ANONYMOUS)? __ SEMICOLON {
+    return {
+        kind: FileLevelNodeKind.Event,
+        location: location(),
+        name,
+        args,
+        anonymous: isAnonymous !== null
+    } as FLEventDefinition;
+}
+
 // ==== Error
 
 ErrorArgs = LPAREN __ ParenSoup __ RPAREN { return text(); }
@@ -180,10 +195,10 @@ CustomizableOperator =
     / '%'
     / '=='
     / '!='
-    / '<'
     / '<='
-    / '>'
-    / '>=';
+    / '>='
+    / '<'
+    / '>';
 
 UsingEntry =
     name: (IdentifierPath) operator: (__ AS __ CustomizableOperator)? {
@@ -310,6 +325,8 @@ LBRACKET = "["
 RBRACKET = "]"
 COMMA = ","
 EQUAL = "="
+ADDRESS = "address"
+PAYABLE = "payable"
 ABSTRACT = "abstract"
 CONTRACT = "contract"
 LIBRARY = "library"
@@ -323,9 +340,11 @@ TYPE = "type"
 RETURNS = "returns"
 PRAGMA = "pragma"
 ERROR = "error"
+EVENT = "event"
 USING = "using"
 FOR = "for"
 GLOBAL = "global"
+ANONYMOUS = "anonymous"
 
 // ==== String literals
 

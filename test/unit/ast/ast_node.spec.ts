@@ -7,11 +7,12 @@ import {
     compileJson,
     FunctionDefinition,
     Literal,
-    SourceUnit
+    SourceUnit,
+    stringToBytes
 } from "../../../src";
 
 describe("ASTNode", () => {
-    const source = fse.readFileSync("test/samples/solidity/node.sol", { encoding: "utf-8" });
+    const source = new Uint8Array(fse.readFileSync("test/samples/solidity/node.sol"));
     const samples = new Map([
         ["0.4.13", "test/samples/solidity/node_0413.json"],
         ["0.5.0", "test/samples/solidity/node_050.json"]
@@ -22,7 +23,7 @@ describe("ASTNode", () => {
             let mainUnit: SourceUnit;
             let nodes: ASTNode[];
 
-            before(async () => {
+            beforeAll(async () => {
                 const reader = new ASTReader();
                 const { data } = await compileJson(sample, version);
 
@@ -47,6 +48,13 @@ describe("ASTNode", () => {
                 const mapperFn = (node: ASTNode) => node.print();
 
                 expect(byTypeString.map(mapperFn)).toEqual(byType.map(mapperFn));
+            });
+
+            it("getParents()", () => {
+                const deepest = nodes[nodes.length - 1];
+                const parents = deepest.getParents();
+
+                expect(parents.map((node) => node.id)).toEqual([10, 11, 12, 13, 14, 15, 16, 17]);
             });
 
             it("getClosestParentBySelector()", () => {
@@ -101,7 +109,7 @@ describe("ASTNode", () => {
             it("extractSourceFragment()", () => {
                 const increment = nodes[nodes.length - 2];
 
-                expect(increment.extractSourceFragment(source)).toEqual("a++");
+                expect(increment.extractSourceFragment(source)).toEqual(stringToBytes("a++"));
             });
         });
     }

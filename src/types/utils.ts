@@ -7,9 +7,6 @@ import {
     ErrorDefinition,
     EventDefinition,
     Expression,
-    ExternalReferenceType,
-    FunctionCall,
-    FunctionCallKind,
     FunctionDefinition,
     FunctionKind,
     FunctionStateMutability,
@@ -306,6 +303,10 @@ export function enumToIntType(decl: EnumDefinition): IntType {
     return new IntType(size, false);
 }
 
+export function fixedBytesTypeToIntType(type: FixedBytesType): IntType {
+    return new IntType(type.size * 8, false, type.src);
+}
+
 export function getABIEncoderVersion(unit: SourceUnit, compilerVersion: string): ABIEncoderVersion {
     const predefined = unit.abiEncoderVersion;
 
@@ -314,25 +315,6 @@ export function getABIEncoderVersion(unit: SourceUnit, compilerVersion: string):
     }
 
     return lt(compilerVersion, "0.8.0") ? ABIEncoderVersion.V1 : ABIEncoderVersion.V2;
-}
-
-export function isFunctionCallExternal(call: FunctionCall): boolean {
-    if (call.kind !== FunctionCallKind.FunctionCall) {
-        return false;
-    }
-
-    if (
-        call.vFunctionCallType === ExternalReferenceType.Builtin &&
-        CALL_BUILTINS.includes(call.vFunctionName)
-    ) {
-        return true;
-    }
-
-    if (call.vExpression.typeString.includes(FunctionVisibility.External)) {
-        return true;
-    }
-
-    return false;
 }
 
 export function getFallbackRecvFuns(contract: ContractDefinition): FunctionDefinition[] {

@@ -8,17 +8,31 @@ import {
     FunctionCall,
     FunctionCallKind,
     Identifier,
+    IndexAccess,
     Literal,
     LiteralKind,
+    MemberAccess,
     TimeUnit,
     TupleExpression,
     UnaryOperation,
     VariableDeclaration
 } from "../ast";
-import { assert, pp } from "../misc";
-import { IntType, NumericLiteralType } from "./ast";
+import { pp } from "../misc";
+import {
+    BytesType,
+    FixedBytesType,
+    IntType,
+    NumericLiteralType,
+    StringType,
+    TypeNode
+} from "./ast";
 import { InferType } from "./infer";
-import { BINARY_OPERATOR_GROUPS, SUBDENOMINATION_MULTIPLIERS, clampIntToType } from "./utils";
+import {
+    BINARY_OPERATOR_GROUPS,
+    SUBDENOMINATION_MULTIPLIERS,
+    clampIntToType,
+    fixedBytesTypeToIntType
+} from "./utils";
 /**
  * Tune up precision of decimal values to follow Solidity behavior.
  * Be careful with precision - setting it to large values causes NodeJS to crash.
@@ -27,7 +41,7 @@ import { BINARY_OPERATOR_GROUPS, SUBDENOMINATION_MULTIPLIERS, clampIntToType } f
  */
 Decimal.set({ precision: 100 });
 
-export type Value = Decimal | boolean | string | bigint;
+export type Value = Decimal | boolean | string | bigint | Buffer;
 
 export class EvalError extends Error {
     expr?: Expression;
@@ -49,7 +63,7 @@ function str(value: Value): string {
     return value instanceof Decimal ? value.toString() : pp(value);
 }
 
-function promoteToDec(v: Value): Decimal {
+export function toDec(v: Value): Decimal {
     if (v instanceof Decimal) {
         return v;
     }
@@ -62,19 +76,108 @@ function promoteToDec(v: Value): Decimal {
         return new Decimal(v === "" ? 0 : "0x" + Buffer.from(v, "utf-8").toString("hex"));
     }
 
+    if (v instanceof Buffer) {
+        return new Decimal(v.length === 0 ? 0 : "0x" + v.toString("hex"));
+    }
+
     throw new Error(`Expected number not ${v}`);
+}
+
+export function toInt(v: Value): bigint {
+    if (typeof v === "bigint") {
+        return v;
+    }
+
+    if (v instanceof Decimal && v.isInt()) {
+        return BigInt(v.toHex());
+    }
+
+    if (typeof v === "string") {
+        return v === "" ? 0n : BigInt("0x" + Buffer.from(v, "utf-8").toString("hex"));
+    }
+
+    if (v instanceof Buffer) {
+        return v.length === 0 ? 0n : BigInt("0x" + v.toString("hex"));
+    }
+
+    throw new Error(`Expected integer not ${v}`);
 }
 
 function demoteFromDec(d: Decimal): Decimal | bigint {
     return d.isInt() ? BigInt(d.toFixed()) : d;
 }
 
-export function isConstant(expr: Expression): boolean {
+export function castToType(v: Value, fromT: TypeNode | undefined, toT: TypeNode): Value {
+    if (typeof v === "bigint") {
+        if (toT instanceof IntType) {
+            return clampIntToType(v, toT);
+        }
+
+        if (toT instanceof FixedBytesType) {
+            if (fromT instanceof FixedBytesType && fromT.size < toT.size) {
+                return BigInt("0x" + v.toString(16).padEnd(toT.size * 2, "0"));
+            }
+
+            return clampIntToType(v, fixedBytesTypeToIntType(toT));
+        }
+    }
+
+    if (typeof v === "string") {
+        if (toT instanceof BytesType) {
+            return Buffer.from(v, "utf-8");
+        }
+
+        if (toT instanceof FixedBytesType) {
+            if (v.length === 0) {
+                return 0n;
+            }
+
+            const buf = Buffer.from(v, "utf-8");
+
+            if (buf.length < toT.size) {
+                return BigInt("0x" + buf.toString("hex").padEnd(toT.size * 2, "0"));
+            }
+
+            return BigInt("0x" + buf.slice(0, toT.size).toString("hex"));
+        }
+    }
+
+    if (v instanceof Buffer) {
+        if (toT instanceof StringType) {
+            return v.toString("utf-8");
+        }
+
+        if (toT instanceof FixedBytesType) {
+            if (v.length === 0) {
+                return 0n;
+            }
+
+            if (v.length < toT.size) {
+                return BigInt("0x" + v.toString("hex").padEnd(toT.size * 2, "0"));
+            }
+
+            return BigInt("0x" + v.slice(0, toT.size).toString("hex"));
+        }
+    }
+
+    return v;
+}
+
+export function isConstant(expr: Expression | VariableDeclaration): boolean {
     if (expr instanceof Literal) {
         return true;
     }
 
     if (expr instanceof UnaryOperation && isConstant(expr.vSubExpression)) {
+        return true;
+    }
+
+    if (
+        expr instanceof VariableDeclaration &&
+        expr.constant &&
+        expr.vValue &&
+        isConstant(expr.vValue)
+    ) {
         return true;
     }
 
@@ -108,17 +211,19 @@ export function isConstant(expr: Expression): boolean {
         return true;
     }
 
-    if (expr instanceof Identifier) {
-        const decl = expr.vReferencedDeclaration;
+    if (expr instanceof Identifier || expr instanceof MemberAccess) {
+        return (
+            expr.vReferencedDeclaration instanceof VariableDeclaration &&
+            isConstant(expr.vReferencedDeclaration)
+        );
+    }
 
-        if (
-            decl instanceof VariableDeclaration &&
-            decl.constant &&
-            decl.vValue &&
-            isConstant(decl.vValue)
-        ) {
-            return true;
-        }
+    if (expr instanceof IndexAccess) {
+        return (
+            isConstant(expr.vBaseExpression) &&
+            expr.vIndexExpression !== undefined &&
+            isConstant(expr.vIndexExpression)
+        );
     }
 
     if (
@@ -142,7 +247,7 @@ export function evalLiteralImpl(
     }
 
     if (kind === LiteralKind.HexString) {
-        return value === "" ? 0n : BigInt("0x" + value);
+        return Buffer.from(value, "hex");
     }
 
     if (kind === LiteralKind.String || kind === LiteralKind.UnicodeString) {
@@ -242,8 +347,8 @@ export function evalBinaryImpl(operator: string, left: Value, right: Value): Val
         if (typeof left === "boolean" || typeof right === "boolean") {
             isEqual = left === right;
         } else {
-            const leftDec = promoteToDec(left);
-            const rightDec = promoteToDec(right);
+            const leftDec = toDec(left);
+            const rightDec = toDec(right);
 
             isEqual = leftDec.equals(rightDec);
         }
@@ -266,8 +371,8 @@ export function evalBinaryImpl(operator: string, left: Value, right: Value): Val
             );
         }
 
-        const leftDec = promoteToDec(left);
-        const rightDec = promoteToDec(right);
+        const leftDec = toDec(left);
+        const rightDec = toDec(right);
 
         if (operator === "<") {
             return leftDec.lessThan(rightDec);
@@ -289,8 +394,8 @@ export function evalBinaryImpl(operator: string, left: Value, right: Value): Val
     }
 
     if (BINARY_OPERATOR_GROUPS.Arithmetic.includes(operator)) {
-        const leftDec = promoteToDec(left);
-        const rightDec = promoteToDec(right);
+        const leftDec = toDec(left);
+        const rightDec = toDec(right);
 
         let res: Decimal;
 
@@ -314,28 +419,27 @@ export function evalBinaryImpl(operator: string, left: Value, right: Value): Val
     }
 
     if (BINARY_OPERATOR_GROUPS.Bitwise.includes(operator)) {
-        if (!(typeof left === "bigint" && typeof right === "bigint")) {
-            throw new EvalError(`${operator} expects integers not ${str(left)} and ${str(right)}`);
-        }
+        const leftInt = toInt(left);
+        const rightInt = toInt(right);
 
         if (operator === "<<") {
-            return left << right;
+            return leftInt << rightInt;
         }
 
         if (operator === ">>") {
-            return left >> right;
+            return leftInt >> rightInt;
         }
 
         if (operator === "|") {
-            return left | right;
+            return leftInt | rightInt;
         }
 
         if (operator === "&") {
-            return left & right;
+            return leftInt & rightInt;
         }
 
         if (operator === "^") {
-            return left ^ right;
+            return leftInt ^ rightInt;
         }
 
         throw new EvalError(`Unknown bitwise operator ${operator}`);
@@ -345,12 +449,28 @@ export function evalBinaryImpl(operator: string, left: Value, right: Value): Val
 }
 
 export function evalLiteral(node: Literal): Value {
+    let kind = node.kind;
+
+    /**
+     * An example:
+     *
+     * ```solidity
+     * contract Test {
+     *     bytes4 constant s = "\x75\x32\xea\xac";
+     * }
+     * ```
+     *
+     * Note that compiler leaves "null" as string value,
+     * so we have to rely on hexadecimal representation instead.
+     */
+    if ((kind === LiteralKind.String || kind === LiteralKind.UnicodeString) && node.value == null) {
+        kind = LiteralKind.HexString;
+    }
+
+    const value = kind === LiteralKind.HexString ? node.hexValue : node.value;
+
     try {
-        return evalLiteralImpl(
-            node.kind,
-            node.kind === LiteralKind.HexString ? node.hexValue : node.value,
-            node.subdenomination
-        );
+        return evalLiteralImpl(kind, value, node.subdenomination);
     } catch (e: unknown) {
         if (e instanceof EvalError) {
             e.expr = node;
@@ -363,13 +483,16 @@ export function evalLiteral(node: Literal): Value {
 export function evalUnary(node: UnaryOperation, inference: InferType): Value {
     try {
         const subT = inference.typeOf(node.vSubExpression);
-        const res = evalUnaryImpl(node.operator, evalConstantExpr(node.vSubExpression, inference));
+        const sub = evalConstantExpr(node.vSubExpression, inference);
 
-        if (subT instanceof IntType && typeof res === "bigint") {
-            return clampIntToType(res, subT);
+        if (subT instanceof NumericLiteralType) {
+            return evalUnaryImpl(node.operator, sub);
         }
 
-        return res;
+        const resT = inference.typeOfUnaryOperation(node);
+        const res = evalUnaryImpl(node.operator, sub);
+
+        return castToType(res, undefined, resT);
     } catch (e: unknown) {
         if (e instanceof EvalError && e.expr === undefined) {
             e.expr = node;
@@ -384,21 +507,25 @@ export function evalBinary(node: BinaryOperation, inference: InferType): Value {
         const leftT = inference.typeOf(node.vLeftExpression);
         const rightT = inference.typeOf(node.vRightExpression);
 
-        const res = evalBinaryImpl(
-            node.operator,
-            evalConstantExpr(node.vLeftExpression, inference),
-            evalConstantExpr(node.vRightExpression, inference)
-        );
+        let left = evalConstantExpr(node.vLeftExpression, inference);
+        let right = evalConstantExpr(node.vRightExpression, inference);
 
-        if (!(leftT instanceof NumericLiteralType && rightT instanceof NumericLiteralType)) {
-            const resT = inference.typeOfBinaryOperation(node);
-
-            if (resT instanceof IntType && typeof res === "bigint") {
-                return clampIntToType(res, resT);
-            }
+        if (leftT instanceof NumericLiteralType && rightT instanceof NumericLiteralType) {
+            return evalBinaryImpl(node.operator, left, right);
         }
 
-        return res;
+        if (node.operator !== "**" && node.operator !== ">>" && node.operator !== "<<") {
+            const commonT = inference.inferCommonType(leftT, rightT);
+
+            left = castToType(left, leftT, commonT);
+            right = castToType(right, rightT, commonT);
+        }
+
+        const res = evalBinaryImpl(node.operator, left, right);
+
+        const resT = inference.typeOfBinaryOperation(node);
+
+        return castToType(res, undefined, resT);
     } catch (e: unknown) {
         if (e instanceof EvalError && e.expr === undefined) {
             e.expr = node;
@@ -408,26 +535,72 @@ export function evalBinary(node: BinaryOperation, inference: InferType): Value {
     }
 }
 
-export function evalFunctionCall(node: FunctionCall, inference: InferType): Value {
-    assert(
-        node.kind === FunctionCallKind.TypeConversion,
-        'Expected constant call to be a "{0}", but got "{1}" instead',
-        FunctionCallKind.TypeConversion,
-        node.kind
-    );
+export function evalIndexAccess(node: IndexAccess, inference: InferType): Value {
+    const base = evalConstantExpr(node.vBaseExpression, inference);
+    const index = evalConstantExpr(node.vIndexExpression as Expression, inference);
 
-    const val = evalConstantExpr(node.vArguments[0], inference);
-
-    if (typeof val === "bigint" && node.vExpression instanceof ElementaryTypeNameExpression) {
-        const castT = inference.typeOfElementaryTypeNameExpression(node.vExpression);
-        const toT = castT.type;
-
-        if (toT instanceof IntType) {
-            return clampIntToType(val, toT);
-        }
+    if (!(typeof index === "bigint" || index instanceof Decimal)) {
+        throw new EvalError(
+            `Unexpected non-numeric index into base in expression ${pp(node)}`,
+            node
+        );
     }
 
-    return val;
+    const plainIndex = index instanceof Decimal ? index.toNumber() : Number(index);
+
+    if (typeof base === "bigint" || base instanceof Decimal) {
+        let baseHex = base instanceof Decimal ? base.toHex().slice(2) : base.toString(16);
+
+        if (baseHex.length % 2 !== 0) {
+            baseHex = "0" + baseHex;
+        }
+
+        const indexInHex = plainIndex * 2;
+
+        if (indexInHex >= baseHex.length) {
+            throw new EvalError(
+                `Out-of-bounds index access ${indexInHex} (originally ${plainIndex}) to "${baseHex}"`
+            );
+        }
+
+        return BigInt("0x" + baseHex.slice(indexInHex, indexInHex + 2));
+    }
+
+    if (base instanceof Buffer) {
+        const res = base.at(plainIndex);
+
+        if (res === undefined) {
+            throw new EvalError(
+                `Out-of-bounds index access ${plainIndex} to ${base.toString("hex")}`
+            );
+        }
+
+        return BigInt(res);
+    }
+
+    throw new EvalError(`Unable to process ${pp(node)}`, node);
+}
+
+export function evalFunctionCall(node: FunctionCall, inference: InferType): Value {
+    if (node.kind !== FunctionCallKind.TypeConversion) {
+        throw new EvalError(
+            `Expected function call to have kind "${FunctionCallKind.TypeConversion}", but got "${node.kind}" instead`,
+            node
+        );
+    }
+
+    if (!(node.vExpression instanceof ElementaryTypeNameExpression)) {
+        throw new EvalError(
+            `Expected function call expression to be an ${ElementaryTypeNameExpression.name}, but got "${node.type}" instead`,
+            node
+        );
+    }
+
+    const val = evalConstantExpr(node.vArguments[0], inference);
+    const fromT = inference.typeOf(node.vArguments[0]);
+    const toT = inference.typeOfElementaryTypeNameExpression(node.vExpression).type;
+
+    return castToType(val, fromT, toT);
 }
 
 /**
@@ -437,7 +610,10 @@ export function evalFunctionCall(node: FunctionCall, inference: InferType): Valu
  * @todo The order of some operations changed in some version.
  * Current implementation does not yet take it into an account.
  */
-export function evalConstantExpr(node: Expression, inference: InferType): Value {
+export function evalConstantExpr(
+    node: Expression | VariableDeclaration,
+    inference: InferType
+): Value {
     if (!isConstant(node)) {
         throw new NonConstantExpressionError(node);
     }
@@ -464,12 +640,19 @@ export function evalConstantExpr(node: Expression, inference: InferType): Value 
             : evalConstantExpr(node.vFalseExpression, inference);
     }
 
-    if (node instanceof Identifier) {
-        const decl = node.vReferencedDeclaration;
+    if (node instanceof VariableDeclaration) {
+        return evalConstantExpr(node.vValue as Expression, inference);
+    }
 
-        if (decl instanceof VariableDeclaration) {
-            return evalConstantExpr(decl.vValue as Expression, inference);
-        }
+    if (node instanceof Identifier || node instanceof MemberAccess) {
+        return evalConstantExpr(
+            node.vReferencedDeclaration as Expression | VariableDeclaration,
+            inference
+        );
+    }
+
+    if (node instanceof IndexAccess) {
+        return evalIndexAccess(node, inference);
     }
 
     if (node instanceof FunctionCall) {

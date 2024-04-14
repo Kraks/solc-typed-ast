@@ -552,7 +552,7 @@ is /*3*/ int24/*;*/;`,
     ],
     [
         "using-for custamizable operators",
-        `using {op.RedLib.toScore, op.RedLib.exp, op.addRed as +, op.mulRed as *, op.unsubRed as -} for Red global;`,
+        `using {op.RedLib.toScore, op.RedLib.exp, op.addRed as +, op.mulRed as *, op.unsubRed as -, op.lteRed as <=, op.gteRed as >=} for Red global;`,
         [
             {
                 kind: "usingForDirective",
@@ -572,8 +572,63 @@ is /*3*/ int24/*;*/;`,
                     {
                         operator: "-",
                         name: "op.unsubRed"
+                    },
+                    {
+                        operator: "<=",
+                        name: "op.lteRed"
+                    },
+                    {
+                        operator: ">=",
+                        name: "op.gteRed"
                     }
                 ]
+            }
+        ]
+    ],
+    [
+        "event definition",
+        `event MyEvent(uint a indexed, address b);`,
+        [
+            {
+                kind: "event",
+                name: "MyEvent",
+                args: "(uint a indexed, address b)",
+                anonymous: false
+            }
+        ]
+    ],
+    [
+        "event definition (anonymous)",
+        `event MyAnonymousEvent(uint x indexed) anonymous;`,
+        [
+            {
+                kind: "event",
+                name: "MyAnonymousEvent",
+                args: "(uint x indexed)",
+                anonymous: true
+            }
+        ]
+    ],
+    [
+        "address payable",
+        `address payable constant MY_CONST = payable(0x0);
+        event MyEvent(address payable indexed addr);
+        error MyError(address payable addr);`,
+        [
+            {
+                kind: "constant",
+                name: "MY_CONST",
+                value: "payable(0x0)"
+            },
+            {
+                kind: "event",
+                name: "MyEvent",
+                args: "(address payable indexed addr)"
+            },
+            {
+                kind: "error",
+                name: "MyError",
+                args: "(address payable addr)"
             }
         ]
     ]

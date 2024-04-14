@@ -7,6 +7,7 @@ import {
     ASTNodeFormatter,
     ASTReader,
     ASTWriter,
+    bytesToString,
     CACHE_DIR,
     CompilationOutput,
     CompileFailedError,
@@ -325,7 +326,7 @@ function error(message: string): never {
                     data.sources[key] = {};
                 }
 
-                data.sources[key].source = value;
+                data.sources[key].source = bytesToString(value);
             }
         }
 

@@ -1,3 +1,4 @@
+import { bytesToString } from "../misc";
 import { CompilerSeries, CompilerVersions } from "./constants";
 import { extractSpecifiersFromSource, getCompilerVersionsBySpecifiers } from "./version";
 
@@ -74,8 +75,12 @@ export class VersionDetectionStrategy implements CompilerVersionSelectionStrateg
     fallback: CompilerVersionSelectionStrategy;
     descending: boolean;
 
-    constructor(sources: string[], fallback: CompilerVersionSelectionStrategy, descending = true) {
-        this.sources = sources;
+    constructor(
+        sources: Uint8Array[],
+        fallback: CompilerVersionSelectionStrategy,
+        descending = true
+    ) {
+        this.sources = sources.map(bytesToString);
         this.fallback = fallback;
         this.descending = descending;
     }
